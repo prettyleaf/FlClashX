@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flclashx/common/common.dart';
 import 'package:flclashx/enum/enum.dart';
 import 'package:flclashx/models/models.dart';
@@ -8,33 +10,108 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+class OverrideNetworkSettingsItem extends ConsumerWidget {
+  const OverrideNetworkSettingsItem({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final overrideNetworkSettings = ref.watch(
+      appSettingProvider.select((state) => state.overrideNetworkSettings),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ListItem.switchItem(
+          title: Text(appLocalizations.overrideNetworkSettings),
+          subtitle: Text(appLocalizations.overrideNetworkSettingsDesc),
+          delegate: SwitchDelegate(
+            value: overrideNetworkSettings,
+            onChanged: (value) {
+              ref.read(appSettingProvider.notifier).updateState(
+                    (state) => state.copyWith(
+                      overrideNetworkSettings: value,
+                    ),
+                  );
+            },
+          ),
+        ),
+        if (!overrideNetworkSettings)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.info_outline,
+                  size: 16,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    appLocalizations.managedByProvider,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.primary,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 class LogLevelItem extends ConsumerWidget {
   const LogLevelItem({super.key});
 
   @override
-  Widget build(BuildContext context, ref) {
-    final logLevel =
+  Widget build(BuildContext context, WidgetRef ref) {
+    final uiLogLevel =
         ref.watch(patchClashConfigProvider.select((state) => state.logLevel));
-    return ListItem<LogLevel>.options(
-      leading: const Icon(Icons.info_outline),
-      title: Text(appLocalizations.logLevel),
-      subtitle: Text(logLevel.name),
-      delegate: OptionsDelegate<LogLevel>(
-        title: appLocalizations.logLevel,
-        options: LogLevel.values,
-        onChanged: (LogLevel? value) {
-          if (value == null) {
-            return;
-          }
-          ref.read(patchClashConfigProvider.notifier).updateState(
-                (state) => state.copyWith(
-                  logLevel: value,
-                ),
-              );
-        },
-        textBuilder: (logLevel) => logLevel.name,
-        value: logLevel,
-      ),
+    final overrideNetworkSettings = ref.watch(
+      appSettingProvider.select((state) => state.overrideNetworkSettings),
+    );
+    final isEnabled = overrideNetworkSettings;
+    return ValueListenableBuilder<String>(
+      valueListenable: globalState.effectiveLogLevel,
+      builder: (_, effectiveName, __) {
+        final effective = LogLevel.values.firstWhere(
+          (lv) => lv.name == effectiveName,
+          orElse: () => uiLogLevel,
+        );
+        final display = isEnabled ? uiLogLevel : effective;
+        return AbsorbPointer(
+          absorbing: !isEnabled,
+          child: Opacity(
+            opacity: isEnabled ? 1.0 : 0.5,
+            child: ListItem<LogLevel>.options(
+              leading: const Icon(Icons.info_outline),
+              title: Text(appLocalizations.logLevel),
+              subtitle: Text(display.name),
+              delegate: OptionsDelegate<LogLevel>(
+                title: appLocalizations.logLevel,
+                options: LogLevel.values,
+                onChanged: (value) {
+                  if (value == null) {
+                    return;
+                  }
+                  ref.read(patchClashConfigProvider.notifier).updateState(
+                        (state) => state.copyWith(
+                          logLevel: value,
+                        ),
+                      );
+                },
+                textBuilder: (logLevel) => logLevel.name,
+                value: display,
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -43,7 +120,7 @@ class UaItem extends ConsumerWidget {
   const UaItem({super.key});
 
   @override
-  Widget build(BuildContext context, ref) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final globalUa =
         ref.watch(patchClashConfigProvider.select((state) => state.globalUa));
     return ListItem<String?>.options(
@@ -75,40 +152,56 @@ class KeepAliveIntervalItem extends ConsumerWidget {
   const KeepAliveIntervalItem({super.key});
 
   @override
-  Widget build(BuildContext context, ref) {
-    final keepAliveInterval = ref.watch(
+  Widget build(BuildContext context, WidgetRef ref) {
+    final uiKeepAlive = ref.watch(
         patchClashConfigProvider.select((state) => state.keepAliveInterval));
-    return ListItem.input(
-      leading: const Icon(Icons.timer_outlined),
-      title: Text(appLocalizations.keepAliveIntervalDesc),
-      subtitle: Text("$keepAliveInterval ${appLocalizations.seconds}"),
-      delegate: InputDelegate(
-        title: appLocalizations.keepAliveIntervalDesc,
-        suffixText: appLocalizations.seconds,
-        resetValue: "$defaultKeepAliveInterval",
-        value: "$keepAliveInterval",
-        validator: (String? value) {
-          if (value == null || value.isEmpty) {
-            return appLocalizations.emptyTip(appLocalizations.interval);
-          }
-          final intValue = int.tryParse(value);
-          if (intValue == null) {
-            return appLocalizations.numberTip(appLocalizations.interval);
-          }
-          return null;
-        },
-        onChanged: (String? value) {
-          if (value == null) {
-            return;
-          }
-          final intValue = int.parse(value);
-          ref.read(patchClashConfigProvider.notifier).updateState(
-                (state) => state.copyWith(
-                  keepAliveInterval: intValue,
-                ),
-              );
-        },
-      ),
+    final overrideNetworkSettings = ref.watch(
+      appSettingProvider.select((state) => state.overrideNetworkSettings),
+    );
+    final isEnabled = overrideNetworkSettings;
+    return ValueListenableBuilder<int>(
+      valueListenable: globalState.effectiveKeepAliveInterval,
+      builder: (_, effective, __) {
+        final display = isEnabled ? uiKeepAlive : effective;
+        return AbsorbPointer(
+          absorbing: !isEnabled,
+          child: Opacity(
+            opacity: isEnabled ? 1.0 : 0.5,
+            child: ListItem.input(
+              leading: const Icon(Icons.timer_outlined),
+              title: Text(appLocalizations.keepAliveIntervalDesc),
+              subtitle: Text("$display ${appLocalizations.seconds}"),
+              delegate: InputDelegate(
+                title: appLocalizations.keepAliveIntervalDesc,
+                suffixText: appLocalizations.seconds,
+                resetValue: "$defaultKeepAliveInterval",
+                value: "$display",
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return appLocalizations.emptyTip(appLocalizations.interval);
+                  }
+                  final intValue = int.tryParse(value);
+                  if (intValue == null) {
+                    return appLocalizations.numberTip(appLocalizations.interval);
+                  }
+                  return null;
+                },
+                onChanged: (value) {
+                  if (value == null) {
+                    return;
+                  }
+                  final intValue = int.parse(value);
+                  ref.read(patchClashConfigProvider.notifier).updateState(
+                        (state) => state.copyWith(
+                          keepAliveInterval: intValue,
+                        ),
+                      );
+                },
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -117,7 +210,7 @@ class TestUrlItem extends ConsumerWidget {
   const TestUrlItem({super.key});
 
   @override
-  Widget build(BuildContext context, ref) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final testUrl =
         ref.watch(appSettingProvider.select((state) => state.testUrl));
     return ListItem.input(
@@ -128,7 +221,7 @@ class TestUrlItem extends ConsumerWidget {
         resetValue: defaultTestUrl,
         title: appLocalizations.testUrl,
         value: testUrl,
-        validator: (String? value) {
+        validator: (value) {
           if (value == null || value.isEmpty) {
             return appLocalizations.emptyTip(appLocalizations.testUrl);
           }
@@ -137,7 +230,7 @@ class TestUrlItem extends ConsumerWidget {
           }
           return null;
         },
-        onChanged: (String? value) {
+        onChanged: (value) {
           if (value == null) {
             return;
           }
@@ -155,53 +248,80 @@ class TestUrlItem extends ConsumerWidget {
 class PortItem extends ConsumerWidget {
   const PortItem({super.key});
 
-  handleShowPortDialog() async {
+  Future<void> handleShowPortDialog() async {
     await globalState.showCommonDialog(
-      child: _PortDialog(),
+      child: const _PortDialog(),
     );
     // inputDelegate.onChanged(value);
   }
 
   @override
-  Widget build(BuildContext context, ref) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // flclashx-androidsecure header forces mixed-port=0 on Android. The port
+    // field becomes meaningless in that case, so hide it entirely rather than
+    // showing a disabled "0" row the user can't do anything about.
+    if (Platform.isAndroid) {
+      final secure = ref.watch(
+        currentProfileProvider.select(
+          (p) =>
+              p?.providerHeaders['flclashx-androidsecure']
+                  ?.trim()
+                  .toLowerCase() ==
+              'true',
+        ),
+      );
+      if (secure) {
+        return const SizedBox.shrink();
+      }
+    }
+
     final mixedPort =
         ref.watch(patchClashConfigProvider.select((state) => state.mixedPort));
-    return ListItem(
-      leading: const Icon(Icons.adjust_outlined),
-      title: Text(appLocalizations.port),
-      subtitle: Text("$mixedPort"),
-      onTap: () {
-        handleShowPortDialog();
-      },
-      // delegate: InputDelegate(
-      //   title: appLocalizations.port,
-      //   value: "$mixedPort",
-      //   validator: (String? value) {
-      //     if (value == null || value.isEmpty) {
-      //       return appLocalizations.emptyTip(appLocalizations.proxyPort);
-      //     }
-      //     final mixedPort = int.tryParse(value);
-      //     if (mixedPort == null) {
-      //       return appLocalizations.numberTip(appLocalizations.proxyPort);
-      //     }
-      //     if (mixedPort < 1024 || mixedPort > 49151) {
-      //       return appLocalizations.proxyPortTip;
-      //     }
-      //     return null;
-      //   },
-      //   onChanged: (String? value) {
-      //     if (value == null) {
-      //       return;
-      //     }
-      //     final mixedPort = int.parse(value);
-      //     ref.read(patchClashConfigProvider.notifier).updateState(
-      //           (state) => state.copyWith(
-      //             mixedPort: mixedPort,
-      //           ),
-      //         );
-      //   },
-      //   resetValue: "$defaultMixedPort",
-      // ),
+    final overrideNetworkSettings = ref.watch(
+      appSettingProvider.select((state) => state.overrideNetworkSettings),
+    );
+    final isEnabled = overrideNetworkSettings;
+
+    return AbsorbPointer(
+      absorbing: !isEnabled,
+      child: Opacity(
+        opacity: isEnabled ? 1.0 : 0.5,
+        child: ListItem(
+          leading: const Icon(Icons.adjust_outlined),
+          title: Text(appLocalizations.port),
+          subtitle: Text("$mixedPort"),
+          onTap: handleShowPortDialog,
+          // delegate: InputDelegate(
+          //   title: appLocalizations.port,
+          //   value: "$mixedPort",
+          //   validator: (String? value) {
+          //     if (value == null || value.isEmpty) {
+          //       return appLocalizations.emptyTip(appLocalizations.proxyPort);
+          //     }
+          //     final mixedPort = int.tryParse(value);
+          //     if (mixedPort == null) {
+          //       return appLocalizations.numberTip(appLocalizations.proxyPort);
+          //     }
+          //     if (mixedPort < 1024 || mixedPort > 49151) {
+          //       return appLocalizations.proxyPortTip;
+          //     }
+          //     return null;
+          //   },
+          //   onChanged: (String? value) {
+          //     if (value == null) {
+          //       return;
+          //     }
+          //     final mixedPort = int.parse(value);
+          //     ref.read(patchClashConfigProvider.notifier).updateState(
+          //           (state) => state.copyWith(
+          //             mixedPort: mixedPort,
+          //           ),
+          //         );
+          //   },
+          //   resetValue: "$defaultMixedPort",
+          // ),
+        ),
+      ),
     );
   }
 }
@@ -210,8 +330,7 @@ class HostsItem extends StatelessWidget {
   const HostsItem({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return ListItem.open(
+  Widget build(BuildContext context) => ListItem.open(
       leading: const Icon(Icons.view_list_outlined),
       title: const Text("Hosts"),
       subtitle: Text(appLocalizations.hostsDesc),
@@ -239,7 +358,6 @@ class HostsItem extends StatelessWidget {
         ),
       ),
     );
-  }
 }
 
 class SendHeadersToggle extends StatefulWidget {
@@ -277,8 +395,7 @@ class _SendHeadersToggleState extends State<SendHeadersToggle> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return ListItem.switchItem(
+  Widget build(BuildContext context) => ListItem.switchItem(
       leading: const Icon(Icons.perm_device_information_outlined),
       title: Text(appLocalizations.settingsSendDeviceDataTitle),
       subtitle: Text(appLocalizations.settingsSendDeviceDataSubtitle),
@@ -287,29 +404,40 @@ class _SendHeadersToggleState extends State<SendHeadersToggle> {
         onChanged: _updatePreference,
       ),
     );
-  }
 }
 
 class Ipv6Item extends ConsumerWidget {
   const Ipv6Item({super.key});
 
   @override
-  Widget build(BuildContext context, ref) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final ipv6 =
         ref.watch(patchClashConfigProvider.select((state) => state.ipv6));
-    return ListItem.switchItem(
-      leading: const Icon(Icons.water_outlined),
-      title: const Text("IPv6"),
-      subtitle: Text(appLocalizations.ipv6Desc),
-      delegate: SwitchDelegate(
-        value: ipv6,
-        onChanged: (bool value) async {
-          ref.read(patchClashConfigProvider.notifier).updateState(
-                (state) => state.copyWith(
-                  ipv6: value,
-                ),
-              );
-        },
+    final overrideNetworkSettings = ref.watch(
+      appSettingProvider.select((state) => state.overrideNetworkSettings),
+    );
+    final isEnabled = overrideNetworkSettings;
+    
+    return AbsorbPointer(
+      absorbing: !isEnabled,
+      child: Opacity(
+        opacity: isEnabled ? 1.0 : 0.5,
+        child: ListItem.switchItem(
+          leading: const Icon(Icons.water_outlined),
+          title: const Text("IPv6"),
+          subtitle: Text(appLocalizations.ipv6Desc),
+          delegate: SwitchDelegate(
+            value: ipv6,
+            onChanged: (value) async {
+              ref.read(patchClashConfigProvider.notifier).updateState(
+                    (state) => state.copyWith(
+                      ipv6: value,
+                    ),
+                  );
+              globalState.appController.updateClashConfigDebounce();
+            },
+          ),
+        ),
       ),
     );
   }
@@ -319,22 +447,34 @@ class AllowLanItem extends ConsumerWidget {
   const AllowLanItem({super.key});
 
   @override
-  Widget build(BuildContext context, ref) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final allowLan =
         ref.watch(patchClashConfigProvider.select((state) => state.allowLan));
-    return ListItem.switchItem(
-      leading: const Icon(Icons.device_hub),
-      title: Text(appLocalizations.allowLan),
-      subtitle: Text(appLocalizations.allowLanDesc),
-      delegate: SwitchDelegate(
-        value: allowLan,
-        onChanged: (bool value) async {
-          ref.read(patchClashConfigProvider.notifier).updateState(
-                (state) => state.copyWith(
-                  allowLan: value,
-                ),
-              );
-        },
+    final overrideNetworkSettings = ref.watch(
+      appSettingProvider.select((state) => state.overrideNetworkSettings),
+    );
+    final isEnabled = overrideNetworkSettings;
+    
+    return AbsorbPointer(
+      absorbing: !isEnabled,
+      child: Opacity(
+        opacity: isEnabled ? 1.0 : 0.5,
+        child: ListItem.switchItem(
+          leading: const Icon(Icons.device_hub),
+          title: Text(appLocalizations.allowLan),
+          subtitle: Text(appLocalizations.allowLanDesc),
+          delegate: SwitchDelegate(
+            value: allowLan,
+            onChanged: (value) async {
+              ref.read(patchClashConfigProvider.notifier).updateState(
+                    (state) => state.copyWith(
+                      allowLan: value,
+                    ),
+                  );
+              globalState.appController.updateClashConfigDebounce();
+            },
+          ),
+        ),
       ),
     );
   }
@@ -344,24 +484,39 @@ class UnifiedDelayItem extends ConsumerWidget {
   const UnifiedDelayItem({super.key});
 
   @override
-  Widget build(BuildContext context, ref) {
-    final unifiedDelay = ref
+  Widget build(BuildContext context, WidgetRef ref) {
+    final uiUnifiedDelay = ref
         .watch(patchClashConfigProvider.select((state) => state.unifiedDelay));
-
-    return ListItem.switchItem(
-      leading: const Icon(Icons.compress_outlined),
-      title: Text(appLocalizations.unifiedDelay),
-      subtitle: Text(appLocalizations.unifiedDelayDesc),
-      delegate: SwitchDelegate(
-        value: unifiedDelay,
-        onChanged: (bool value) async {
-          ref.read(patchClashConfigProvider.notifier).updateState(
-                (state) => state.copyWith(
-                  unifiedDelay: value,
-                ),
-              );
-        },
-      ),
+    final overrideNetworkSettings = ref.watch(
+      appSettingProvider.select((state) => state.overrideNetworkSettings),
+    );
+    final isEnabled = overrideNetworkSettings;
+    return ValueListenableBuilder<bool>(
+      valueListenable: globalState.effectiveUnifiedDelay,
+      builder: (_, effective, __) {
+        final display = isEnabled ? uiUnifiedDelay : effective;
+        return AbsorbPointer(
+          absorbing: !isEnabled,
+          child: Opacity(
+            opacity: isEnabled ? 1.0 : 0.5,
+            child: ListItem.switchItem(
+              leading: const Icon(Icons.compress_outlined),
+              title: Text(appLocalizations.unifiedDelay),
+              subtitle: Text(appLocalizations.unifiedDelayDesc),
+              delegate: SwitchDelegate(
+                value: display,
+                onChanged: (value) async {
+                  ref.read(patchClashConfigProvider.notifier).updateState(
+                        (state) => state.copyWith(
+                          unifiedDelay: value,
+                        ),
+                      );
+                },
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -369,25 +524,51 @@ class UnifiedDelayItem extends ConsumerWidget {
 class FindProcessItem extends ConsumerWidget {
   const FindProcessItem({super.key});
 
-  @override
-  Widget build(BuildContext context, ref) {
-    final findProcess = ref.watch(patchClashConfigProvider
-        .select((state) => state.findProcessMode == FindProcessMode.always));
+  String _getFindProcessModeLabel(FindProcessMode mode) {
+    switch (mode) {
+      case FindProcessMode.off:
+        return 'Off';
+      case FindProcessMode.strict:
+        return 'Strict';
+      case FindProcessMode.always:
+        return 'Always';
+    }
+  }
 
-    return ListItem.switchItem(
-      leading: const Icon(Icons.polymer_outlined),
-      title: Text(appLocalizations.findProcessMode),
-      subtitle: Text(appLocalizations.findProcessModeDesc),
-      delegate: SwitchDelegate(
-        value: findProcess,
-        onChanged: (bool value) async {
-          ref.read(patchClashConfigProvider.notifier).updateState(
-                (state) => state.copyWith(
-                  findProcessMode:
-                      value ? FindProcessMode.always : FindProcessMode.off,
-                ),
-              );
-        },
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final findProcessMode = ref.watch(
+      patchClashConfigProvider.select((state) => state.findProcessMode),
+    );
+    final overrideNetworkSettings = ref.watch(
+      appSettingProvider.select((state) => state.overrideNetworkSettings),
+    );
+    final isEnabled = overrideNetworkSettings;
+
+    return AbsorbPointer(
+      absorbing: !isEnabled,
+      child: Opacity(
+        opacity: isEnabled ? 1.0 : 0.5,
+        child: ListItem<FindProcessMode>.options(
+          leading: const Icon(Icons.polymer_outlined),
+          title: Text(appLocalizations.findProcessMode),
+          subtitle: Text(_getFindProcessModeLabel(findProcessMode)),
+          delegate: OptionsDelegate<FindProcessMode>(
+            title: appLocalizations.findProcessMode,
+            options: FindProcessMode.values,
+            onChanged: (value) async {
+              if (value == null) return;
+              ref.read(patchClashConfigProvider.notifier).updateState(
+                    (state) => state.copyWith(
+                      findProcessMode: value,
+                    ),
+                  );
+              globalState.appController.updateClashConfigDebounce();
+            },
+            textBuilder: _getFindProcessModeLabel,
+            value: findProcessMode,
+          ),
+        ),
       ),
     );
   }
@@ -397,23 +578,39 @@ class TcpConcurrentItem extends ConsumerWidget {
   const TcpConcurrentItem({super.key});
 
   @override
-  Widget build(BuildContext context, ref) {
-    final tcpConcurrent = ref
+  Widget build(BuildContext context, WidgetRef ref) {
+    final uiTcpConcurrent = ref
         .watch(patchClashConfigProvider.select((state) => state.tcpConcurrent));
-    return ListItem.switchItem(
-      leading: const Icon(Icons.double_arrow_outlined),
-      title: Text(appLocalizations.tcpConcurrent),
-      subtitle: Text(appLocalizations.tcpConcurrentDesc),
-      delegate: SwitchDelegate(
-        value: tcpConcurrent,
-        onChanged: (value) async {
-          ref.read(patchClashConfigProvider.notifier).updateState(
-                (state) => state.copyWith(
-                  tcpConcurrent: value,
-                ),
-              );
-        },
-      ),
+    final overrideNetworkSettings = ref.watch(
+      appSettingProvider.select((state) => state.overrideNetworkSettings),
+    );
+    final isEnabled = overrideNetworkSettings;
+    return ValueListenableBuilder<bool>(
+      valueListenable: globalState.effectiveTcpConcurrent,
+      builder: (_, effective, __) {
+        final display = isEnabled ? uiTcpConcurrent : effective;
+        return AbsorbPointer(
+          absorbing: !isEnabled,
+          child: Opacity(
+            opacity: isEnabled ? 1.0 : 0.5,
+            child: ListItem.switchItem(
+              leading: const Icon(Icons.double_arrow_outlined),
+              title: Text(appLocalizations.tcpConcurrent),
+              subtitle: Text(appLocalizations.tcpConcurrentDesc),
+              delegate: SwitchDelegate(
+                value: display,
+                onChanged: (value) async {
+                  ref.read(patchClashConfigProvider.notifier).updateState(
+                        (state) => state.copyWith(
+                          tcpConcurrent: value,
+                        ),
+                      );
+                },
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -422,7 +619,7 @@ class GeodataLoaderItem extends ConsumerWidget {
   const GeodataLoaderItem({super.key});
 
   @override
-  Widget build(BuildContext context, ref) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final isMemconservative = ref.watch(patchClashConfigProvider.select(
         (state) => state.geodataLoader == GeodataLoader.memconservative));
     return ListItem.switchItem(
@@ -431,7 +628,7 @@ class GeodataLoaderItem extends ConsumerWidget {
       subtitle: Text(appLocalizations.geodataLoaderDesc),
       delegate: SwitchDelegate(
         value: isMemconservative,
-        onChanged: (bool value) async {
+        onChanged: (value) async {
           ref.read(patchClashConfigProvider.notifier).updateState(
                 (state) => state.copyWith(
                   geodataLoader: value
@@ -449,44 +646,69 @@ class ExternalControllerItem extends ConsumerWidget {
   const ExternalControllerItem({super.key});
 
   @override
-  Widget build(BuildContext context, ref) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final hasExternalController = ref.watch(patchClashConfigProvider.select(
         (state) => state.externalController == ExternalControllerStatus.open));
-    return ListItem.switchItem(
-      leading: const Icon(Icons.api_outlined),
-      title: Text(appLocalizations.externalController),
-      subtitle: Text(appLocalizations.externalControllerDesc),
-      delegate: SwitchDelegate(
-        value: hasExternalController,
-        onChanged: (bool value) async {
-          ref.read(patchClashConfigProvider.notifier).updateState(
-                (state) => state.copyWith(
-                  externalController: value
-                      ? ExternalControllerStatus.open
-                      : ExternalControllerStatus.close,
-                ),
-              );
-        },
-      ),
+    final overrideNetworkSettings = ref.watch(
+      appSettingProvider.select((state) => state.overrideNetworkSettings),
+    );
+    final isEnabled = overrideNetworkSettings;
+    return ValueListenableBuilder<String>(
+      valueListenable: globalState.effectiveExternalController,
+      builder: (_, effective, __) {
+        final isEffective = effective.isNotEmpty;
+        final displayAddress =
+            isEffective ? effective : ExternalControllerStatus.open.value;
+        final subtitle =
+            '${appLocalizations.externalControllerDesc} ($displayAddress)';
+        return AbsorbPointer(
+          absorbing: !isEnabled,
+          child: Opacity(
+            opacity: isEnabled ? 1.0 : 0.5,
+            child: ListItem.switchItem(
+              leading: const Icon(Icons.api_outlined),
+              title: Text(appLocalizations.externalController),
+              subtitle: Text(subtitle),
+              delegate: SwitchDelegate(
+                // When override is ON, follow the UI toggle alone — the user
+                // explicitly controls the state. When OFF, reflect whichever
+                // value is effectively applied (provider or UI fallback) so
+                // the subscription's forced value is visible.
+                value: isEnabled ? hasExternalController : isEffective,
+                onChanged: (value) async {
+                  ref.read(patchClashConfigProvider.notifier).updateState(
+                        (state) => state.copyWith(
+                          externalController: value
+                              ? ExternalControllerStatus.open
+                              : ExternalControllerStatus.close,
+                        ),
+                      );
+                },
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
 
 final generalItems = <Widget>[
-  LogLevelItem(),
-  UaItem(),
-  if (system.isDesktop) KeepAliveIntervalItem(),
-  TestUrlItem(),
-  PortItem(),
-  HostsItem(),
+  const OverrideNetworkSettingsItem(),
+  const LogLevelItem(),
+  const UaItem(),
+  if (system.isDesktop) const KeepAliveIntervalItem(),
+  const TestUrlItem(),
+  const PortItem(),
+  const HostsItem(),
   const SendHeadersToggle(),
-  Ipv6Item(),
-  AllowLanItem(),
-  UnifiedDelayItem(),
-  FindProcessItem(),
-  TcpConcurrentItem(),
-  GeodataLoaderItem(),
-  ExternalControllerItem(),
+  const Ipv6Item(),
+  const AllowLanItem(),
+  const UnifiedDelayItem(),
+  const FindProcessItem(),
+  const TcpConcurrentItem(),
+  const GeodataLoaderItem(),
+  const ExternalControllerItem(),
 ]
     .separated(
       const Divider(
@@ -515,15 +737,13 @@ class _PortDialogState extends ConsumerState<_PortDialog> {
   @override
   void initState() {
     super.initState();
-    final vm5 = ref.read(patchClashConfigProvider.select((state) {
-      return VM5(
+    final vm5 = ref.read(patchClashConfigProvider.select((state) => VM5(
         a: state.mixedPort,
         b: state.port,
         c: state.socksPort,
         d: state.redirPort,
         e: state.tproxyPort,
-      );
-    }));
+      )));
     _mixedPortController = TextEditingController(
       text: vm5.a.toString(),
     );
@@ -541,7 +761,7 @@ class _PortDialogState extends ConsumerState<_PortDialog> {
     );
   }
 
-  _handleReset() async {
+  Future<void> _handleReset() async {
     final res = await globalState.showMessage(
       message: TextSpan(
         text: appLocalizations.resetTip,
@@ -564,7 +784,7 @@ class _PortDialogState extends ConsumerState<_PortDialog> {
     }
   }
 
-  _handleUpdate() {
+  void _handleUpdate() {
     if (_formKey.currentState?.validate() == false) return;
     ref.read(patchClashConfigProvider.notifier).updateState(
           (state) => state.copyWith(
@@ -578,15 +798,14 @@ class _PortDialogState extends ConsumerState<_PortDialog> {
     Navigator.of(context).pop();
   }
 
-  _handleMore() {
+  void _handleMore() {
     setState(() {
       _isMore = !_isMore;
     });
   }
 
   @override
-  Widget build(BuildContext context) {
-    return CommonDialog(
+  Widget build(BuildContext context) => CommonDialog(
       title: appLocalizations.port,
       actions: [
         Row(
@@ -620,7 +839,7 @@ class _PortDialogState extends ConsumerState<_PortDialog> {
         autovalidateMode: AutovalidateMode.onUserInteraction,
         key: _formKey,
         child: Padding(
-          padding: EdgeInsets.only(top: 8),
+          padding: const EdgeInsets.only(top: 8),
           child: AnimatedSize(
             duration: midDuration,
             curve: Curves.easeOutQuad,
@@ -649,6 +868,9 @@ class _PortDialogState extends ConsumerState<_PortDialog> {
                     if (port == null) {
                       return appLocalizations
                           .numberTip(appLocalizations.mixedPort);
+                    }
+                    if (port == 0) {
+                      return null;
                     }
                     if (port < 1024 || port > 49151) {
                       return appLocalizations
@@ -839,5 +1061,4 @@ class _PortDialogState extends ConsumerState<_PortDialog> {
         ),
       ),
     );
-  }
 }

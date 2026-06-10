@@ -51,8 +51,8 @@ const maxMobileWidth = 600;
 const maxLaptopWidth = 840;
 const defaultTestUrl = "https://www.gstatic.com/generate_204";
 final commonFilter = ImageFilter.blur(
-  sigmaX: 5,
-  sigmaY: 5,
+  sigmaX: 2.5,
+  sigmaY: 2.5,
   tileMode: TileMode.mirror,
 );
 
@@ -84,9 +84,7 @@ const viewModeColumnsMap = {
 
 const defaultPrimaryColor = 0xFF03A9F4;
 
-double getWidgetHeight(num lines) {
-  return max(lines * 84 + (lines - 1) * 16, 0).ap;
-}
+double getWidgetHeight(num lines) => max(lines * 84 + (lines - 1) * 16, 0).ap;
 
 const maxLength = 150;
 

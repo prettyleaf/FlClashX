@@ -20,7 +20,7 @@ jobs:
             os: windows-latest
             arch: amd64
           - platform: linux
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             arch: amd64
           - platform: macos
             os: macos-latest
@@ -28,21 +28,25 @@ jobs:
           - platform: macos
             os: macos-latest
             arch: arm64
-          # - platform: windows
-          #   os: windows-11-arm
-          #   arch: arm64
-          - platform: linux
-            os: ubuntu-24.04-arm
-            arch: arm64
+          #- platform: windows
+          #  os: windows-11-arm
+          #  arch: arm64
+          #- platform: linux
+          #  os: ubuntu-24.04-arm
+          #  arch: arm64
 
     steps:
-      - name: Setup rust
+      - name: Setup Rust for Windows ARM64
         if: startsWith(matrix.os, 'windows-11-arm')
         run: |
           Invoke-WebRequest -Uri "https://win.rustup.rs/aarch64" -OutFile rustup-init.exe
           .\rustup-init.exe -y --default-toolchain stable
           $cargoPath = "$env:USERPROFILE\.cargo\bin"
           Add-Content $env:GITHUB_PATH $cargoPath
+      
+      - name: Setup Rust ARM64 target for cross-compilation
+        if: matrix.platform == 'windows' && matrix.arch == 'arm64' && !startsWith(matrix.os, 'windows-11-arm')
+        run: rustup target add aarch64-pc-windows-msvc
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -100,23 +104,26 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.0"
+          go-version: "1.26.0"
           cache-dependency-path: |
             core/go.sum
 
-      - name: Setup Flutter Master
+      - name: Setup Flutter (ARM)
         if: startsWith(matrix.os, 'windows-11-arm') || startsWith(matrix.os, 'ubuntu-24.04-arm')
         uses: subosito/flutter-action@v2
         with:
-          channel: "master"
+          flutter-version: 3.44.0
+          channel: "main"
           cache: true
+
       - name: Setup Flutter
         if: ${{ !(startsWith(matrix.os, 'windows-11-arm') || startsWith(matrix.os, 'ubuntu-24.04-arm')) }}
         uses: subosito/flutter-action@v2
         with:
-          channel: "stable"
+          flutter-version: 3.41.6
           cache: true
-      #          flutter-version: 3.29.3
+
+      - run: flutter --version
 
       - name: Get Flutter Dependency
         run: flutter pub get
@@ -273,7 +280,26 @@ jobs:
       - name: Generate release.md
         run: |
           tags=($(git tag --merged $(git rev-parse HEAD) --sort=-creatordate))
-          preTag=$(curl --silent "https://api.github.com/repos/pluralplay/FlClashX/releases/latest" | grep -Po '"tag_name": "\K.*?(?=")' || echo "")
+          
+          # Determine previous tag based on release type
+          if [ "${{ env.IS_STABLE }}" == "true" ]; then
+            # For stable: get latest stable release from API
+            preTag=$(curl --silent "https://api.github.com/repos/pluralplay/FlClashX/releases/latest" | grep -Po '"tag_name": "\K.*?(?=")' || echo "")
+          else
+            # For pre-release: get the latest pre-release tag (last tag with '-' in name before current)
+            preTag=""
+            for tag in "${tags[@]}"; do
+              if [ "$tag" != "${tags[0]}" ] && [[ "$tag" == *-* ]]; then
+                preTag="$tag"
+                break
+              fi
+            done
+            # If no previous pre-release found, use latest stable
+            if [ -z "$preTag" ]; then
+              preTag=$(curl --silent "https://api.github.com/repos/pluralplay/FlClashX/releases/latest" | grep -Po '"tag_name": "\K.*?(?=")' || echo "")
+            fi
+          fi
+          
           currentTag=""
           for ((i = 0; i <= ${#tags[@]}; i++)); do
             if (( i < ${#tags[@]} )); then
@@ -300,7 +326,11 @@ jobs:
       - name: Patch release.md
         run: |
           version=$(echo "${{ github.ref_name }}" | sed 's/^v//')
-          sed "s|VERSION|$version|g" ./.github/release_template.md >> release.md
+          if [ "${{ env.IS_STABLE }}" == "true" ]; then
+            sed "s|VERSION|$version|g" ./.github/release_template.md >> release.md
+          else
+            sed "s|VERSION|$version|g" ./.github/pre_release_template.md >> release.md
+          fi
 
       - name: Generate sha256
         if: env.IS_STABLE == 'true'
@@ -310,9 +340,42 @@ jobs:
             sha256sum "$file" > "${file}.sha256"
           done
 
-      - name: Release
+      - name: Release (Stable)
         if: ${{ env.IS_STABLE == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           files: ./dist/*
           body_path: "./release.md"
+          prerelease: false
+
+      - name: Release (Pre-release)
+        if: ${{ env.IS_STABLE != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./dist/*
+          body_path: "./release.md"
+          prerelease: true
+
+      - name: Prepare commit list for notification
+        id: prepare_commits
+        run: |
+          # Extract first 10 commits from release.md (without the template footer)
+          commits=$(head -n 20 release.md | grep "^- " | head -n 10)
+          # Escape special characters for JSON
+          commits_escaped=$(echo "$commits" | jq -Rs .)
+          echo "commits=$commits_escaped" >> $GITHUB_OUTPUT
+
+      - name: Send Telegram notifications
+        if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID_1: ${{ secrets.TELEGRAM_CHANNEL_ID_1 }}
+          TELEGRAM_CHANNEL_ID_2: ${{ secrets.TELEGRAM_CHANNEL_ID_2 }}
+          TELEGRAM_CHANNEL_ID_3: ${{ secrets.TELEGRAM_CHANNEL_ID_3 }}
+          VERSION: ${{ github.ref_name }}
+          COMMITS: ${{ fromJSON(steps.prepare_commits.outputs.commits) }}
+          RELEASE_URL: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+          IS_STABLE: ${{ env.IS_STABLE }}
+        run: |
+          python3 -m pip install requests --quiet
+          python3 .github/scripts/notify_telegram.py

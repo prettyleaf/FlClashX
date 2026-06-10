@@ -93,12 +93,21 @@ NavigationItemsState currentNavigationsState(Ref ref) {
 
 @riverpod
 CoreState coreState(Ref ref) {
-  final vpnProps = ref.watch(vpnSettingProvider);
+  var vpnProps = ref.watch(vpnSettingProvider);
+  final mixedPort = ref.watch(
+    patchClashConfigProvider.select((state) => state.mixedPort),
+  );
+  // With mixed-port disabled there is no HTTP proxy to advertise to the OS.
+  // Force VpnProps.systemProxy off so FlClashVpnService doesn't register a
+  // ProxyInfo pointing at 127.0.0.1:0 via setHttpProxy. Traffic is still
+  // routed through the VPN/TUN, just without the HTTP-proxy hint.
+  if (mixedPort == 0 && vpnProps.systemProxy) {
+    vpnProps = vpnProps.copyWith(systemProxy: false);
+  }
   final currentProfile = ref.watch(currentProfileProvider);
-  final onlyStatisticsProxy = ref.watch(appSettingProvider).onlyStatisticsProxy;
   return CoreState(
     vpnProps: vpnProps,
-    onlyStatisticsProxy: onlyStatisticsProxy,
+    onlyStatisticsProxy: false,
     currentProfileName: currentProfile?.label ?? currentProfile?.id ?? "",
   );
 }
@@ -140,9 +149,13 @@ ProxyState proxyState(Ref ref) {
   final mixedPort = ref.watch(
     patchClashConfigProvider.select((state) => state.mixedPort),
   );
+  // Mixed-port = 0 means the HTTP proxy inbound is disabled, so there's
+  // nothing for the OS-level system proxy to point at. Force it off here so
+  // ProxyManager calls stopProxy() instead of startProxy(0, ...).
+  final systemProxy = mixedPort == 0 ? false : vm2.a;
   return ProxyState(
     isStart: isStart,
-    systemProxy: vm2.a,
+    systemProxy: systemProxy,
     bassDomain: vm2.b,
     port: mixedPort,
   );
@@ -168,6 +181,7 @@ TrayState trayState(Ref ref) {
   );
 
   final selectedMap = ref.watch(selectedMapProvider);
+  final globalModeEnabled = ref.watch(globalModeEnabledProvider);
 
   return TrayState(
     mode: clashConfig.mode,
@@ -180,6 +194,7 @@ TrayState trayState(Ref ref) {
     brightness: brightness,
     groups: groups,
     selectedMap: selectedMap,
+    globalModeEnabled: globalModeEnabled,
   );
 }
 
@@ -242,9 +257,12 @@ StartButtonSelectorState startButtonSelectorState(Ref ref) {
   final isInit = ref.watch(initProvider);
   final hasProfile =
       ref.watch(profilesProvider.select((state) => state.isNotEmpty));
+  final hasProxiesInit =
+      ref.watch(groupsProvider.select((state) => state.isNotEmpty));
   return StartButtonSelectorState(
     isInit: isInit,
     hasProfile: hasProfile,
+    hasProxiesInit: hasProxiesInit,
   );
 }
 
@@ -254,7 +272,7 @@ ProfilesSelectorState profilesSelectorState(Ref ref) {
   final profiles = ref.watch(profilesProvider);
   final columns = ref.watch(
     viewWidthProvider.select(
-      (state) => utils.getProfilesColumns(state),
+      utils.getProfilesColumns,
     ),
   );
   return ProfilesSelectorState(
@@ -266,9 +284,7 @@ ProfilesSelectorState profilesSelectorState(Ref ref) {
 
 @riverpod
 ProxiesListSelectorState proxiesListSelectorState(Ref ref) {
-  final groupNames = ref.watch(currentGroupsStateProvider.select((state) {
-    return state.value.map((e) => e.name).toList();
-  }));
+  final groupNames = ref.watch(currentGroupsStateProvider.select((state) => state.value.map((e) => e.name).toList()));
   final currentUnfoldSet = ref.watch(unfoldSetProvider);
   final proxiesStyle = ref.watch(proxiesStyleSettingProvider);
   final sortNum = ref.watch(sortNumProvider);
@@ -293,9 +309,7 @@ ProxiesListSelectorState proxiesListSelectorState(Ref ref) {
 ProxiesSelectorState proxiesSelectorState(Ref ref) {
   final groupNames = ref.watch(
     currentGroupsStateProvider.select(
-      (state) {
-        return state.value.map((e) => e.name).toList();
-      },
+      (state) => state.value.map((e) => e.name).toList(),
     ),
   );
   final currentGroupName = ref.watch(currentProfileProvider.select(
@@ -308,17 +322,13 @@ ProxiesSelectorState proxiesSelectorState(Ref ref) {
 }
 
 @riverpod
-GroupNamesState groupNamesState(Ref ref) {
-  return GroupNamesState(
+GroupNamesState groupNamesState(Ref ref) => GroupNamesState(
     groupNames: ref.watch(
       currentGroupsStateProvider.select(
-        (state) {
-          return state.value.map((e) => e.name).toList();
-        },
+        (state) => state.value.map((e) => e.name).toList(),
       ),
     ),
   );
-}
 
 @riverpod
 ProxyGroupSelectorState proxyGroupSelectorState(Ref ref, String groupName) {
@@ -334,9 +344,7 @@ ProxyGroupSelectorState proxyGroupSelectorState(Ref ref, String groupName) {
   final columns = ref.watch(getProxiesColumnsProvider);
   final query =
       ref.watch(proxiesQueryProvider.select((state) => state.toLowerCase()));
-  final proxies = group?.all.where((item) {
-        return item.name.toLowerCase().contains(query);
-      }).toList() ??
+  final proxies = group?.all.where((item) => item.name.toLowerCase().contains(query)).toList() ??
       [];
   return ProxyGroupSelectorState(
     testUrl: group?.testUrl,
@@ -363,8 +371,7 @@ PackageListSelectorState packageListSelectorState(Ref ref) {
 @riverpod
 MoreToolsSelectorState moreToolsSelectorState(Ref ref) {
   final viewMode = ref.watch(viewModeProvider);
-  final navigationItems = ref.watch(navigationsStateProvider.select((state) {
-    return state.value.where((element) {
+  final navigationItems = ref.watch(navigationsStateProvider.select((state) => state.value.where((element) {
       final isMore = element.modes.contains(NavigationItemMode.more);
       final isDesktop = element.modes.contains(NavigationItemMode.desktop);
       if (isMore && !isDesktop) return true;
@@ -372,8 +379,7 @@ MoreToolsSelectorState moreToolsSelectorState(Ref ref) {
         return false;
       }
       return true;
-    }).toList();
-  }));
+    }).toList()));
 
   return MoreToolsSelectorState(navigationItems: navigationItems);
 }
@@ -442,8 +448,7 @@ Set<String> unfoldSet(Ref ref) {
 }
 
 @riverpod
-HotKeyAction getHotKeyAction(Ref ref, HotAction hotAction) {
-  return ref.watch(
+HotKeyAction getHotKeyAction(Ref ref, HotAction hotAction) => ref.watch(
     hotKeyActionsProvider.select(
       (state) {
         final index = state.indexWhere((item) => item.action == hotAction);
@@ -455,13 +460,46 @@ HotKeyAction getHotKeyAction(Ref ref, HotAction hotAction) {
       },
     ),
   );
-}
 
 @riverpod
 Profile? currentProfile(Ref ref) {
   final profileId = ref.watch(currentProfileIdProvider);
   return ref
       .watch(profilesProvider.select((state) => state.getProfile(profileId)));
+}
+
+@riverpod
+bool globalModeEnabled(Ref ref) {
+  final profile = ref.watch(currentProfileProvider);
+  final value = profile?.providerHeaders['flclashx-globalmode'];
+  return value?.toLowerCase() != 'false';
+}
+
+@riverpod
+bool hasAnnounceData(Ref ref) {
+  final profile = ref.watch(currentProfileProvider);
+  final value = profile?.providerHeaders['announce'];
+  return value != null && value.isNotEmpty;
+}
+
+@riverpod
+bool hasServiceInfoData(Ref ref) {
+  final profile = ref.watch(currentProfileProvider);
+  final value = profile?.providerHeaders['flclashx-servicename'];
+  return value != null && value.isNotEmpty;
+}
+
+@riverpod
+bool hasServerInfoData(Ref ref) {
+  final profile = ref.watch(currentProfileProvider);
+  final value = profile?.providerHeaders['flclashx-serverinfo'];
+  return value != null && value.isNotEmpty;
+}
+
+@riverpod
+String? backgroundUrl(Ref ref) {
+  final profile = ref.watch(currentProfileProvider);
+  return profile?.providerHeaders['flclashx-background'];
 }
 
 @riverpod
@@ -527,26 +565,32 @@ String? getSelectedProxyName(Ref ref, String groupName) {
 String getProxyDesc(Ref ref, Proxy proxy) {
   final groupTypeNamesList = GroupType.values.map((e) => e.name).toList();
   if (!groupTypeNamesList.contains(proxy.type)) {
-    return proxy.type;
+    return proxy.serverDescription ?? proxy.type;
   } else {
     final groups = ref.watch(groupsProvider);
     final index = groups.indexWhere((element) => element.name == proxy.name);
-    if (index == -1) return proxy.type;
+    if (index == -1) return proxy.serverDescription ?? proxy.type;
+    // Custom description from YAML wins over the group type when present.
+    // Otherwise show the currently selected proxy instead of "Type(selection)".
+    final customDesc = globalState.groupDescriptions.value[proxy.name];
+    if (customDesc != null && customDesc.isNotEmpty) {
+      return customDesc;
+    }
     final state = ref.watch(getProxyCardStateProvider(proxy.name));
-    return "${proxy.type}(${state.proxyName.isNotEmpty ? state.proxyName : '*'})";
+    return state.proxyName.isNotEmpty
+        ? state.proxyName
+        : (proxy.serverDescription ?? proxy.type);
   }
 }
 
 @riverpod
 class ProfileOverrideState extends _$ProfileOverrideState {
   @override
-  ProfileOverrideStateModel build() {
-    return ProfileOverrideStateModel(
+  ProfileOverrideStateModel build() => const ProfileOverrideStateModel(
       selectedRules: {},
     );
-  }
 
-  updateState(
+  void updateState(
     ProfileOverrideStateModel? Function(ProfileOverrideStateModel state)
         builder,
   ) {
@@ -559,13 +603,11 @@ class ProfileOverrideState extends _$ProfileOverrideState {
 }
 
 @riverpod
-OverrideData? getProfileOverrideData(Ref ref, String profileId) {
-  return ref.watch(
+OverrideData? getProfileOverrideData(Ref ref, String profileId) => ref.watch(
     profilesProvider.select(
       (state) => state.getProfile(profileId)?.overrideData,
     ),
   );
-}
 
 @riverpod
 VM2? layoutChange(Ref ref) {

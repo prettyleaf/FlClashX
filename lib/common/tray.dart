@@ -16,6 +16,7 @@ import 'window.dart';
 class Tray {
   Future _updateSystemTray({
     required Brightness? brightness,
+    required bool isRunning,
     bool force = false,
   }) async {
     if (Platform.isAndroid || Platform.isMacOS) {
@@ -29,6 +30,7 @@ class Tray {
       utils.getTrayIconPath(
         brightness: brightness ??
             WidgetsBinding.instance.platformDispatcher.platformBrightness,
+        isRunning: isRunning,
       ),
       isTemplate: true,
     );
@@ -39,7 +41,7 @@ class Tray {
     }
   }
 
-  update({
+  Future<void> update({
     required TrayState trayState,
     bool focus = false,
   }) async {
@@ -50,10 +52,11 @@ class Tray {
     if (!Platform.isLinux) {
       await _updateSystemTray(
         brightness: trayState.brightness,
+        isRunning: trayState.isStart,
         force: focus,
       );
     }
-    List<MenuItem> menuItems = [];
+    final menuItems = <MenuItem>[];
     final showMenuItem = MenuItem(
       label: appLocalizations.show,
       onClick: (_) {
@@ -69,17 +72,19 @@ class Tray {
       checked: false,
     );
     menuItems.add(startMenuItem);
-    menuItems.add(MenuItem.separator());
-    for (final mode in Mode.values) {
-      menuItems.add(
-        MenuItem.checkbox(
-          label: Intl.message(mode.name),
-          onClick: (_) {
-            globalState.appController.changeMode(mode);
-          },
-          checked: mode == trayState.mode,
-        ),
-      );
+    if (trayState.globalModeEnabled) {
+      menuItems.add(MenuItem.separator());
+      for (final mode in Mode.values) {
+        menuItems.add(
+          MenuItem.checkbox(
+            label: Intl.message(mode.name),
+            onClick: (_) {
+              globalState.appController.changeMode(mode);
+            },
+            checked: mode == trayState.mode,
+          ),
+        );
+      }
     }
     menuItems.add(MenuItem.separator());
     if (trayState.isStart) {
@@ -119,6 +124,13 @@ class Tray {
     menuItems.add(autoStartMenuItem);
     menuItems.add(copyEnvVarMenuItem);
     menuItems.add(MenuItem.separator());
+    final restartMenuItem = MenuItem(
+      label: appLocalizations.restart,
+      onClick: (_) async {
+        await globalState.appController.handleRestart();
+      },
+    );
+    menuItems.add(restartMenuItem);
     final exitMenuItem = MenuItem(
       label: appLocalizations.exit,
       onClick: (_) async {
@@ -131,12 +143,13 @@ class Tray {
     if (Platform.isLinux) {
       await _updateSystemTray(
         brightness: trayState.brightness,
+        isRunning: trayState.isStart,
         force: focus,
       );
     }
   }
 
-  updateTrayTitle([Traffic? traffic]) async {
+  Future<void> updateTrayTitle([Traffic? traffic]) async {
     // if (!Platform.isMacOS) {
     //   return;
     // }

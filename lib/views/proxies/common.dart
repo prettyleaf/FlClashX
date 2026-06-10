@@ -21,7 +21,7 @@ double getItemHeight(ProxyCardType proxyCardType) {
   };
 }
 
-proxyDelayTest(Proxy proxy, [String? testUrl]) async {
+Future<void> proxyDelayTest(Proxy proxy, [String? testUrl]) async {
   final appController = globalState.appController;
   final state = appController.getProxyCardState(proxy.name);
   final url = state.testUrl.getSafeValue(
@@ -30,22 +30,23 @@ proxyDelayTest(Proxy proxy, [String? testUrl]) async {
   if (state.proxyName.isEmpty) {
     return;
   }
-  appController.setDelay(
-    Delay(
-      url: url,
-      name: state.proxyName,
-      value: 0,
-    ),
-  );
-  appController.setDelay(
-    await clashCore.getDelay(
-      url,
-      state.proxyName,
-    ),
-  );
+  appController
+    ..setDelay(
+      Delay(
+        url: url,
+        name: state.proxyName,
+        value: 0,
+      ),
+    )
+    ..setDelay(
+      await clashCore.getDelay(
+        url,
+        state.proxyName,
+      ),
+    );
 }
 
-delayTest(List<Proxy> proxies, [String? testUrl]) async {
+Future<void> delayTest(List<Proxy> proxies, [String? testUrl]) async {
   final appController = globalState.appController;
   final proxyNames = proxies.map((proxy) => proxy.name).toSet().toList();
 
@@ -58,19 +59,20 @@ delayTest(List<Proxy> proxies, [String? testUrl]) async {
     if (name.isEmpty) {
       return;
     }
-    appController.setDelay(
-      Delay(
-        url: url,
-        name: name,
-        value: 0,
-      ),
-    );
-    appController.setDelay(
-      await clashCore.getDelay(
-        url,
-        name,
-      ),
-    );
+    appController
+      ..setDelay(
+        Delay(
+          url: url,
+          name: name,
+          value: 0,
+        ),
+      )
+      ..setDelay(
+        await clashCore.getDelay(
+          url,
+          name,
+        ),
+      );
   }).toList();
 
   final batchesDelayProxies = delayProxies.batch(100);

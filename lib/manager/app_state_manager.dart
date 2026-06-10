@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flclashx/common/common.dart';
+import 'package:flclashx/enum/enum.dart';
+import 'package:flclashx/plugins/tile.dart';
 import 'package:flclashx/providers/providers.dart';
 import 'package:flclashx/state.dart';
 import 'package:flutter/foundation.dart';
@@ -8,12 +10,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class AppStateManager extends ConsumerStatefulWidget {
-  final Widget child;
 
   const AppStateManager({
     super.key,
     required this.child,
   });
+  final Widget child;
 
   @override
   ConsumerState<AppStateManager> createState() => _AppStateManagerState();
@@ -59,10 +61,46 @@ class _AppStateManagerState extends ConsumerState<AppStateManager>
         }
       },
     );
+    ref.listenManual(
+      patchClashConfigProvider.select((state) => state.mode),
+      (prev, next) {
+        if (prev != next) {
+          tile?.updateMode(next.name);
+        }
+      },
+      fireImmediately: true,
+    );
+    ref.listenManual(
+      globalModeEnabledProvider,
+      (prev, next) {
+        if (prev != next) {
+          tile?.updateGlobalModeEnabled(next);
+        }
+      },
+      fireImmediately: true,
+    );
+    ref.listenManual(
+      globalModeEnabledProvider,
+      (prev, next) {
+        if (next) {
+          return;
+        }
+        final currentMode = ref.read(
+          patchClashConfigProvider.select((state) => state.mode),
+        );
+        if (currentMode != Mode.global) {
+          return;
+        }
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          globalState.appController.changeMode(Mode.rule);
+        });
+      },
+      fireImmediately: true,
+    );
   }
 
   @override
-  reassemble() {
+  void reassemble() {
     super.reassemble();
   }
 
@@ -92,23 +130,21 @@ class _AppStateManagerState extends ConsumerState<AppStateManager>
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Listener(
+  Widget build(BuildContext context) => Listener(
       onPointerHover: (_) {
         render?.resume();
       },
       child: widget.child,
     );
-  }
 }
 
 class AppEnvManager extends StatelessWidget {
-  final Widget child;
 
   const AppEnvManager({
     super.key,
     required this.child,
   });
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {

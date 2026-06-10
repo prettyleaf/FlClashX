@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/adapter/provider"
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
 	"github.com/metacubex/mihomo/common/observable"
 	"github.com/metacubex/mihomo/common/utils"
@@ -22,17 +23,19 @@ import (
 	"github.com/metacubex/mihomo/constant"
 	cp "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/hub/executor"
-	"github.com/metacubex/mihomo/listener"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
 )
 
 var (
-	isInit                = false
-	externalProviders     = map[string]cp.Provider{}
-	logSubscriber         observable.Subscription[log.Event]
-	proxyDescriptions     = map[string]string{} // Store serverDescription for each proxy
+	isInit              = false
+	externalProviders   = map[string]cp.Provider{}
+	logSubscriber       observable.Subscription[log.Event]
+	healthCheckStopCh   chan struct{}
+	healthCheckSeen     = map[string]string{}
+	requestStopCh       chan struct{}
+	requestSeen         = map[string]bool{}
 )
 
 func handleInitClash(paramsString string) bool {
@@ -42,8 +45,8 @@ func handleInitClash(paramsString string) bool {
 		return false
 	}
 	version = params.Version
+	constant.SetHomeDir(params.HomeDir)
 	if !isInit {
-		constant.SetHomeDir(params.HomeDir)
 		isInit = true
 	}
 	return isInit
@@ -51,10 +54,34 @@ func handleInitClash(paramsString string) bool {
 
 func handleStartListener() bool {
 	runLock.Lock()
-	defer runLock.Unlock()
+	if isRunning {
+		runLock.Unlock()
+		return true
+	}
 	isRunning = true
-	updateListeners()
-	resolver.ResetConnection()
+	if currentConfig != nil {
+		// On Android TUN is driven by a file descriptor from VpnService in
+		// handleStartTun, not by mihomo's internal TUN — keep cfg flag off.
+		// On desktop, updateListeners() below will (re)create the TUN device.
+		if runtime.GOOS == "android" {
+			currentConfig.General.Tun.Enable = false
+		} else {
+			currentConfig.General.Tun.Enable = pendingTunEnable
+		}
+	}
+	runLock.Unlock()
+
+	// setupConfig already ran executor.ApplyConfig when the profile was loaded,
+	// so proxies/rules/DNS/providers are live. Starting only needs to (re)bind
+	// listeners and (re)create the TUN device — calling ApplyConfig again would
+	// re-run updateProxies, loadProvider(wg.Wait()), updateDNS and runtime.GC()
+	// for no reason and was the main source of the long "start" delay.
+	go func() {
+		updateListeners()
+		resolver.ResetConnection()
+		startHealthCheckForwarder()
+		startRequestForwarder()
+	}()
 	return true
 }
 
@@ -62,7 +89,10 @@ func handleStopListener() bool {
 	runLock.Lock()
 	defer runLock.Unlock()
 	isRunning = false
-	listener.StopListener()
+	// Keep health-check forwarder running so proxy pings stay fresh in the UI
+	// while the VPN is off. It is torn down only on full shutdown.
+	stopRequestForwarder()
+	stopListeners()
 	return true
 }
 
@@ -78,11 +108,176 @@ func handleForceGc() {
 }
 
 func handleShutdown() bool {
+	stopHealthCheckForwarder()
+	stopRequestForwarder()
 	stopListeners()
 	executor.Shutdown()
 	runtime.GC()
 	isInit = false
 	return true
+}
+
+func startHealthCheckForwarder() {
+	if healthCheckStopCh != nil {
+		return
+	}
+	healthCheckStopCh = make(chan struct{})
+	go func(stopCh chan struct{}) {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				forwardHealthCheckDelays()
+			case <-stopCh:
+				return
+			}
+		}
+	}(healthCheckStopCh)
+}
+
+func stopHealthCheckForwarder() {
+	if healthCheckStopCh == nil {
+		return
+	}
+	close(healthCheckStopCh)
+	healthCheckStopCh = nil
+}
+
+func resetHealthCheckForwarderState() {
+	healthCheckSeen = map[string]string{}
+}
+
+func forwardHealthCheckDelays() {
+	runLock.Lock()
+	if currentConfig == nil {
+		runLock.Unlock()
+		return
+	}
+	touchProviders()
+	proxies := proxiesWithProviders()
+	runLock.Unlock()
+
+	for name, proxy := range proxies {
+		emitLatestDelay(name, "", proxy.DelayHistory())
+		for url, state := range proxy.ExtraDelayHistories() {
+			emitLatestDelay(name, url, state.History)
+		}
+	}
+}
+
+// runInitialProviderHealthChecks kicks off one HealthCheck per proxy provider
+// in background goroutines, so the UI has pings right after profile load
+// without waiting for the provider's own healthcheck-interval to elapse.
+// HealthCheck blocks until every URL test finishes, so each provider gets
+// its own goroutine to avoid serialising them.
+func runInitialProviderHealthChecks() {
+	for _, p := range tunnel.Providers() {
+		pp, ok := p.(*provider.ProxySetProvider)
+		if !ok {
+			continue
+		}
+		go pp.HealthCheck()
+	}
+}
+
+// touchProviders marks all proxy providers as recently used so that their
+// internal lazy health-check goroutines actually execute on the next tick.
+// Unlike the previous triggerProviderHealthChecks which called HealthCheck()
+// (blocking until every URL test finishes), Touch() returns immediately and
+// lets the provider's own background goroutine perform the checks without
+// holding runLock for seconds.
+func touchProviders() {
+	for _, p := range tunnel.Providers() {
+		pp, ok := p.(*provider.ProxySetProvider)
+		if !ok {
+			continue
+		}
+		pp.Touch()
+	}
+}
+
+// startRequestForwarder polls the statistic manager for newly opened trackers
+// and pushes each one to Flutter via a RequestMessage. Upstream mihomo does
+// not expose the statistic.DefaultRequestNotify hook our old Clash.Meta fork
+// relied on, so we emulate it with a short-interval poll.
+func startRequestForwarder() {
+	if requestStopCh != nil {
+		return
+	}
+	requestSeen = map[string]bool{}
+	requestStopCh = make(chan struct{})
+	go func(stopCh chan struct{}) {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				forwardNewRequests()
+			case <-stopCh:
+				return
+			}
+		}
+	}(requestStopCh)
+}
+
+func stopRequestForwarder() {
+	if requestStopCh == nil {
+		return
+	}
+	close(requestStopCh)
+	requestStopCh = nil
+	requestSeen = map[string]bool{}
+}
+
+func forwardNewRequests() {
+	alive := make(map[string]bool, len(requestSeen))
+	statistic.DefaultManager.Range(func(c statistic.Tracker) bool {
+		id := c.ID()
+		alive[id] = true
+		if requestSeen[id] {
+			return true
+		}
+		requestSeen[id] = true
+		sendMessage(Message{
+			Type: RequestMessage,
+			Data: c.Info(),
+		})
+		return true
+	})
+	// Drop ids that were closed so short-lived reused ids do not accumulate
+	// and a later reconnection with the same id can still be reported.
+	for id := range requestSeen {
+		if !alive[id] {
+			delete(requestSeen, id)
+		}
+	}
+}
+
+func emitLatestDelay(proxyName string, testURL string, history []constant.DelayHistory) {
+	if len(history) == 0 {
+		return
+	}
+	latest := history[len(history)-1]
+	key := proxyName + "|" + testURL
+	signature := fmt.Sprintf("%d:%d", latest.Time.UnixNano(), latest.Delay)
+	if healthCheckSeen[key] == signature {
+		return
+	}
+	healthCheckSeen[key] = signature
+
+	delayValue := int32(latest.Delay)
+	if latest.Delay == 0 {
+		delayValue = -1
+	}
+	sendMessage(Message{
+		Type: DelayMessage,
+		Data: &Delay{
+			Url:   testURL,
+			Name:  proxyName,
+			Value: delayValue,
+		},
+	})
 }
 
 func handleValidateConfig(bytes []byte) string {
@@ -93,58 +288,10 @@ func handleValidateConfig(bytes []byte) string {
 	return ""
 }
 
-// extractProxyDescriptionsFromRaw extracts serverDescription from raw YAML config
-// Note: Caller must hold runLock
-func extractProxyDescriptionsFromRaw(rawConfig *config.RawConfig) {
-	if rawConfig == nil || rawConfig.Proxy == nil {
-		return
-	}
-	
-	// Clear previous descriptions
-	proxyDescriptions = make(map[string]string)
-	
-	// Extract serverDescription from each proxy
-	for _, proxyMap := range rawConfig.Proxy {
-		if name, ok := proxyMap["name"].(string); ok {
-			if desc, ok := proxyMap["serverDescription"].(string); ok && desc != "" {
-				proxyDescriptions[name] = desc
-			}
-		}
-	}
-}
-
 func handleGetProxies() interface{} {
 	runLock.Lock()
 	defer runLock.Unlock()
-	proxies := tunnel.ProxiesWithProviders()
-	
-	// Convert to map for JSON manipulation
-	result := make(map[string]interface{})
-	for name, proxy := range proxies {
-		// Marshal proxy to JSON
-		proxyJSON, err := json.Marshal(proxy)
-		if err != nil {
-			result[name] = proxy
-			continue
-		}
-		
-		// Unmarshal to map
-		var proxyMap map[string]interface{}
-		err = json.Unmarshal(proxyJSON, &proxyMap)
-		if err != nil {
-			result[name] = proxy
-			continue
-		}
-		
-		// Add serverDescription if exists
-		if desc, ok := proxyDescriptions[name]; ok {
-			proxyMap["serverDescription"] = desc
-		}
-		
-		result[name] = proxyMap
-	}
-	
-	return result
+	return proxiesWithDescriptions()
 }
 
 func handleChangeProxy(data string, fn func(string string)) {
@@ -159,7 +306,7 @@ func handleChangeProxy(data string, fn func(string string)) {
 		}
 		groupName := *params.GroupName
 		proxyName := *params.ProxyName
-		proxies := tunnel.ProxiesWithProviders()
+		proxies := proxiesWithProviders()
 		group, ok := proxies[groupName]
 		if !ok {
 			fn("Not found group")
@@ -187,7 +334,7 @@ func handleChangeProxy(data string, fn func(string string)) {
 }
 
 func handleGetTraffic() string {
-	up, down := statistic.DefaultManager.Current(state.CurrentState.OnlyStatisticsProxy)
+	up, down := statistic.DefaultManager.Now()
 	traffic := map[string]int64{
 		"up":   up,
 		"down": down,
@@ -201,7 +348,7 @@ func handleGetTraffic() string {
 }
 
 func handleGetTotalTraffic() string {
-	up, down := statistic.DefaultManager.Total(state.CurrentState.OnlyStatisticsProxy)
+	up, down := statistic.DefaultManager.Total()
 	traffic := map[string]int64{
 		"up":   up,
 		"down": down,
@@ -236,7 +383,7 @@ func handleAsyncTestDelay(paramsString string, fn func(string)) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(params.Timeout))
 		defer cancel()
 
-		proxies := tunnel.ProxiesWithProviders()
+		proxies := proxiesWithProviders()
 		proxy := proxies[params.ProxyName]
 
 		delayData := &Delay{
@@ -250,7 +397,7 @@ func handleAsyncTestDelay(paramsString string, fn func(string)) {
 			return false, nil
 		}
 
-		testUrl := constant.DefaultTestURL
+		testUrl := "https://www.gstatic.com/generate_204"
 
 		if params.TestUrl != "" {
 			testUrl = params.TestUrl
@@ -268,6 +415,13 @@ func handleAsyncTestDelay(paramsString string, fn func(string)) {
 		delayData.Value = int32(delay)
 		data, _ := json.Marshal(delayData)
 		fn(string(data))
+
+		// Push delay update via message
+		sendMessage(Message{
+			Type: DelayMessage,
+			Data: delayData,
+		})
+
 		return false, nil
 	})
 }
@@ -359,32 +513,20 @@ func handleGetExternalProvider(externalProviderName string) string {
 
 func handleUpdateGeoData(geoType string, geoName string, fn func(value string)) {
 	go func() {
-		path := constant.Path.Resolve(geoName)
+		var err error
 		switch geoType {
 		case "MMDB":
-			err := updater.UpdateMMDBWithPath(path)
-			if err != nil {
-				fn(err.Error())
-				return
-			}
+			err = updater.UpdateMMDB()
 		case "ASN":
-			err := updater.UpdateASNWithPath(path)
-			if err != nil {
-				fn(err.Error())
-				return
-			}
+			err = updater.UpdateASN()
 		case "GeoIp":
-			err := updater.UpdateGeoIpWithPath(path)
-			if err != nil {
-				fn(err.Error())
-				return
-			}
+			err = updater.UpdateGeoIp()
 		case "GeoSite":
-			err := updater.UpdateGeoSiteWithPath(path)
-			if err != nil {
-				fn(err.Error())
-				return
-			}
+			err = updater.UpdateGeoSite()
+		}
+		if err != nil {
+			fn(err.Error())
+			return
 		}
 		fn("")
 	}()
@@ -513,34 +655,4 @@ func handleSetupConfig(bytes []byte) string {
 		return err.Error()
 	}
 	return ""
-}
-
-func init() {
-	adapter.UrlTestHook = func(url string, name string, delay uint16) {
-		delayData := &Delay{
-			Url:  url,
-			Name: name,
-		}
-		if delay == 0 {
-			delayData.Value = -1
-		} else {
-			delayData.Value = int32(delay)
-		}
-		sendMessage(Message{
-			Type: DelayMessage,
-			Data: delayData,
-		})
-	}
-	statistic.DefaultRequestNotify = func(c statistic.Tracker) {
-		sendMessage(Message{
-			Type: RequestMessage,
-			Data: c,
-		})
-	}
-	executor.DefaultProviderLoadedHook = func(providerName string) {
-		sendMessage(Message{
-			Type: LoadedMessage,
-			Data: providerName,
-		})
-	}
 }
